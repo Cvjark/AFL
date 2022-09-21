@@ -168,7 +168,7 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            queued_discovered,         /* Items discovered during this run */
            queued_imported,           /* Items imported via -S            */
            queued_favored,            /* Paths deemed favorable           */
-           queued_with_cov,           /* Paths with new coverage bytes    */
+           queued_with_cov,           /* Paths with new coverage bytes  标志位，指示当前队列节点触发新代码路径的关键 bytes  */
            pending_not_fuzzed,        /* Queued but not done yet          */
            pending_favored,           /* Pending favored paths            */
            cur_skipped_paths,         /* Abandoned inputs in cur cycle    */
@@ -900,22 +900,26 @@ EXP_ST void read_bitmap(u8* fname) {
    Update virgin bits to reflect the finds. Returns 1 if the only change is
    the hit-count for a particular tuple; 2 if there are new tuples seen. 
    Updates the map, so subsequent calls will always return 0.
+   返回1 -> new found 关乎已发现的覆盖路径的命中次数。需要需要小更新
+   返回2 -> new found 关乎未被发现的路径，需要大更新
 
    This function is called after every exec() on a fairly large buffer, so
-   it needs to be fast. We do this in 32-bit and 64-bit flavors. */
+   it needs to be fast. We do this in 32-bit and 64-bit flavors. 
+   每次执行 exec 后都会调用 */
+   
 
-static inline u8 has_new_bits(u8* virgin_map) {
+static inline u8 has_new_bits(u8* virgin_map) { /
 
 #ifdef WORD_SIZE_64
 
-  u64* current = (u64*)trace_bits;
-  u64* virgin  = (u64*)virgin_map;
+  u64* current = (u64*)trace_bits;  // 本轮
+  u64* virgin  = (u64*)virgin_map;  // 先前
 
   u32  i = (MAP_SIZE >> 3);
 
 #else
 
-  u32* current = (u32*)trace_bits;
+  u32* current = (u32*)trace_bits;  
   u32* virgin  = (u32*)virgin_map;
 
   u32  i = (MAP_SIZE >> 2);
@@ -941,7 +945,7 @@ static inline u8 has_new_bits(u8* virgin_map) {
            bytes in current[] are pristine in virgin[]. */
 
 #ifdef WORD_SIZE_64
-
+        // 需要注意的是运算符 '==' 高于 '&&'，即依字节先判断 vir 那些
         if ((cur[0] && vir[0] == 0xff) || (cur[1] && vir[1] == 0xff) ||
             (cur[2] && vir[2] == 0xff) || (cur[3] && vir[3] == 0xff) ||
             (cur[4] && vir[4] == 0xff) || (cur[5] && vir[5] == 0xff) ||
@@ -958,18 +962,18 @@ static inline u8 has_new_bits(u8* virgin_map) {
 
       }
 
-      *virgin &= ~*current;
+      *virgin &= ~*current; // 这是在更新
 
     }
 
-    current++;
+    current++;   // 往后遍历比对新的单元
     virgin++;
 
   }
 
-  if (ret && virgin_map == virgin_bits) bitmap_changed = 1;
+  if (ret && virgin_map == virgin_bits) bitmap_changed = 1; // 置指示覆盖信息更新的标志位 bitmap_changed = 1
 
-  return ret;
+  return ret; // 返回 has_new_bits 的更新类型
 
 }
 
@@ -1251,6 +1255,7 @@ static void minimize_bits(u8* dst, u8* src) {
 
 }
 
+// 2022.09.21 first 
 
 /* When we bump into a new path, we call this to see if the path appears
    more "favorable" than any of the existing ones. The purpose of the
@@ -1311,12 +1316,14 @@ static void update_bitmap_score(struct queue_entry* q) {
    goes over top_rated[] entries, and then sequentially grabs winners for
    previously-unseen bytes (temp_v) and marks them as favored, at least
    until the next run. The favored entries are given more air time during
-   all fuzzing steps. */
+   all fuzzing steps. 
+   大致就是筛选出先前未被发现的路径，并将之标记为 favor ，
+   标记为 favor 的部分在下一轮的 fuzzing 会拥有更多的执行时间，笔者 ps：有偏向的倾注资源*/
 
 static void cull_queue(void) {
 
   struct queue_entry* q;
-  static u8 temp_v[MAP_SIZE >> 3];
+  static u8 temp_v[MAP_SIZE >> 3];    // 用来记录那些先前未被发现的部分
   u32 i;
 
   if (dumb_mode || !score_changed) return;
@@ -2004,22 +2011,22 @@ static void destroy_extras(void) {
 
 EXP_ST void init_forkserver(char** argv) {
 
-  static struct itimerval it;
-  int st_pipe[2], ctl_pipe[2];
-  int status;
+  static struct itimerval it; // 超时设置
+  int st_pipe[2], ctl_pipe[2];  // 通信管道
+  int status; // 用于保存子进程的运行状态
   s32 rlen;
 
   ACTF("Spinning up the fork server...");
 
-  if (pipe(st_pipe) || pipe(ctl_pipe)) PFATAL("pipe() failed");
+  if (pipe(st_pipe) || pipe(ctl_pipe)) PFATAL("pipe() failed"); // 创建管道，管道的信息由参数返回，分别是控制管道 & 状态管道
 
-  forksrv_pid = fork();
+  forksrv_pid = fork(); 
 
   if (forksrv_pid < 0) PFATAL("fork() failed");
 
-  if (!forksrv_pid) {
+  if (!forksrv_pid) { // 选中子进程，和 fork 函数 return 的值相关
 
-    struct rlimit r;
+    struct rlimit r;    // 结构体用于设置子进程所能获取到的资源的最大值，下面做的一些操作都是和资源限制相关的
 
     /* Umpf. On OpenBSD, the default fd limit for root users is set to
        soft 128. Let's try to fix that... */
@@ -2064,24 +2071,24 @@ EXP_ST void init_forkserver(char** argv) {
 
     setsid();
 
-    dup2(dev_null_fd, 1);
+    dup2(dev_null_fd, 1);   // 重定向管道 1，2 到 dev_null_fd
     dup2(dev_null_fd, 2);
 
     if (out_file) {
 
-      dup2(dev_null_fd, 0);
+      dup2(dev_null_fd, 0); // 当 out_file 存在且有效，则重定向管道 0 到 dev_null_fd
 
     } else {
 
-      dup2(out_fd, 0);
+      dup2(out_fd, 0);  // out_file 无效，则重定向管道 0 到 out_fd
       close(out_fd);
 
     }
 
     /* Set up control and status pipes, close the unneeded original fds. */
 
-    if (dup2(ctl_pipe[0], FORKSRV_FD) < 0) PFATAL("dup2() failed");
-    if (dup2(st_pipe[1], FORKSRV_FD + 1) < 0) PFATAL("dup2() failed");
+    if (dup2(ctl_pipe[0], FORKSRV_FD) < 0) PFATAL("dup2() failed"); // 控制管道 198
+    if (dup2(st_pipe[1], FORKSRV_FD + 1) < 0) PFATAL("dup2() failed");  // 状态管道 199
 
     close(ctl_pipe[0]);
     close(ctl_pipe[1]);
@@ -2114,17 +2121,17 @@ EXP_ST void init_forkserver(char** argv) {
                            "allocator_may_return_null=1:"
                            "msan_track_origins=0", 0);
 
-    execv(target_path, argv);
+    execv(target_path, argv);   // 子进程执行 target 程序
 
     /* Use a distinctive bitmap signature to tell the parent about execv()
        falling through. */
 
-    *(u32*)trace_bits = EXEC_FAIL_SIG;
-    exit(0);
+    *(u32*)trace_bits = EXEC_FAIL_SIG;  // 用于告知主程序当前子进程正在执行 exec
+    exit(0);  // 子进程回收
 
-  }
+  } // 以上是子进程执行的内容
 
-  /* Close the unneeded endpoints. */
+  /* Close the unneeded endpoints. */   // 往下部分是主进程执行的，因为在此之前子进程已销往
 
   close(ctl_pipe[0]);
   close(st_pipe[1]);
@@ -2132,14 +2139,14 @@ EXP_ST void init_forkserver(char** argv) {
   fsrv_ctl_fd = ctl_pipe[1];
   fsrv_st_fd  = st_pipe[0];
 
-  /* Wait for the fork server to come up, but don't wait too long. */
+  /* Wait for the fork server to come up, but don't wait too long. 等待 fork server 启动*/
 
   it.it_value.tv_sec = ((exec_tmout * FORK_WAIT_MULT) / 1000);
   it.it_value.tv_usec = ((exec_tmout * FORK_WAIT_MULT) % 1000) * 1000;
 
   setitimer(ITIMER_REAL, &it, NULL);
 
-  rlen = read(fsrv_st_fd, &status, 4);
+  rlen = read(fsrv_st_fd, &status, 4);    // 从管道读取内容到 status 
 
   it.it_value.tv_sec = 0;
   it.it_value.tv_usec = 0;
@@ -2149,21 +2156,21 @@ EXP_ST void init_forkserver(char** argv) {
   /* If we have a four-byte "hello" message from the server, we're all set.
      Otherwise, try to figure out what went wrong. */
 
-  if (rlen == 4) {
+  if (rlen == 4) {    // 若从状态管道成功读取出 4 bytes 内容则说明 fork server 启动成功
     OKF("All right - fork server is up.");
     return;
   }
 
-  if (child_timed_out)
+  if (child_timed_out)    // 子进程超时
     FATAL("Timeout while initializing fork server (adjusting -t may help)");
 
   if (waitpid(forksrv_pid, &status, 0) <= 0)
     PFATAL("waitpid() failed");
 
-  if (WIFSIGNALED(status)) {
+  if (WIFSIGNALED(status)) {  // WIFSIGNALED(status) = 0 表示异常退出，则执行如下，判断异常原因
 
     if (mem_limit && mem_limit < 500 && uses_asan) {
-
+      // target 开启了 asan 在执行时需要用到较多的内存资源，而用户对内存使用做了限制
       SAYF("\n" cLRD "[-] " cRST
            "Whoops, the target binary crashed suddenly, before receiving any input\n"
            "    from the fuzzer! Since it seems to be built with ASAN and you have a\n"
@@ -2285,24 +2292,25 @@ EXP_ST void init_forkserver(char** argv) {
 
 
 /* Execute target application, monitoring for timeouts. Return status
-   information. The called program will update trace_bits[]. */
+   information. The called program will update trace_bits[]. 执
+   行目标程序，监控超时时间，返回执行的过程信息。该函数会根据执行的结果更新 trace_bits[]*/
 
 static u8 run_target(char** argv, u32 timeout) {
 
-  static struct itimerval it;
+  static struct itimerval it; // linux 结构体，计时器相关的结构体
   static u32 prev_timed_out = 0;
-  static u64 exec_ms = 0;
+  static u64 exec_ms = 0;   // 记录执行时间
 
   int status = 0;
   u32 tb4;
 
-  child_timed_out = 0;
+  child_timed_out = 0;    // 标志位，指示子进程因超时退出
 
   /* After this memset, trace_bits[] are effectively volatile, so we
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE);
+  memset(trace_bits, 0, MAP_SIZE);  // 初始化 trace_bits 为全 0
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2310,15 +2318,15 @@ static u8 run_target(char** argv, u32 timeout) {
      execve(). There is a bit of code duplication between here and 
      init_forkserver(), but c'est la vie. */
 
-  if (dumb_mode == 1 || no_forkserver) {
+  if (dumb_mode == 1 || no_forkserver) {  // 当运行在 dumb_mode 或 forkserver 处于禁止的状态，执行如下：
 
-    child_pid = fork();
+    child_pid = fork();   // fork 出子进程
 
     if (child_pid < 0) PFATAL("fork() failed");
 
-    if (!child_pid) {
+    if (!child_pid) {   // 筛选中子进程，子进程执行下述：
 
-      struct rlimit r;
+      struct rlimit r;  // 该结构体保存子进程资源使用的最大限
 
       if (mem_limit) {
 
@@ -2346,7 +2354,7 @@ static u8 run_target(char** argv, u32 timeout) {
       setsid();
 
       dup2(dev_null_fd, 1);
-      dup2(dev_null_fd, 2);
+      dup2(dev_null_fd, 2);   // 设置管道
 
       if (out_file) {
 
@@ -2368,7 +2376,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
       /* Set sane defaults for ASAN if nothing else specified. */
 
-      setenv("ASAN_OPTIONS", "abort_on_error=1:"
+      setenv("ASAN_OPTIONS", "abort_on_error=1:"    // 设置默认参数
                              "detect_leaks=0:"
                              "symbolize=0:"
                              "allocator_may_return_null=1", 0);
@@ -2377,59 +2385,64 @@ static u8 run_target(char** argv, u32 timeout) {
                              "symbolize=0:"
                              "msan_track_origins=0", 0);
 
-      execv(target_path, argv);
+      execv(target_path, argv);   // 子进程执行目标程序
 
       /* Use a distinctive bitmap value to tell the parent about execv()
          falling through. */
 
-      *(u32*)trace_bits = EXEC_FAIL_SIG;
+      *(u32*)trace_bits = EXEC_FAIL_SIG;  // 用于告知主进程，子进程正在执行 exec
       exit(0);
 
-    }
+    } // 子进程筛选 if 的 end
 
-  } else {
+  } else {  // else 部分是当运行在非 dumb_mode 或 forkserver 处于开启的状态，管道信息在 init_forkserver 中开辟好了，执行如下：
 
     s32 res;
 
     /* In non-dumb mode, we have the fork server up and running, so simply
        tell it to have at it, and then read back PID. */
 
-    if ((res = write(fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {
+    if ((res = write(fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {  
+      // 向控制管道写入 prev_timed_out的值，命令主进程 fork 出子进程进行 fuzz
+      if (stop_soon) return 0;
+      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
+
+    }
+
+    if ((res = read(fsrv_st_fd, &child_pid, 4)) != 4) {   // 从状态管道读取 fork 出来的子进程 pid
 
       if (stop_soon) return 0;
       RPFATAL(res, "Unable to request new process from fork server (OOM?)");
 
     }
 
-    if ((res = read(fsrv_st_fd, &child_pid, 4)) != 4) {
-
-      if (stop_soon) return 0;
-      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
-
-    }
-
-    if (child_pid <= 0) FATAL("Fork server is misbehaving (OOM?)");
+    if (child_pid <= 0) FATAL("Fork server is misbehaving (OOM?)"); // 说明 fork 失败
 
   }
+  /* 上边的内容总的来说就是：1. 程序运行在 dumb_mode 或者 forkserver 关闭时，fork 出子进程执行 exec
+     2. 程序运行在 非dumb_mode 或者 forkserver 开启时，向控制管道写入内容 -> 命令主进程 fork 出子进程，
+        随后从管道读取 fork 出来的 pid */
 
   /* Configure timeout, as requested by user, then wait for child to terminate. */
 
-  it.it_value.tv_sec = (timeout / 1000);
+  it.it_value.tv_sec = (timeout / 1000);    // 配置超时相关内容
   it.it_value.tv_usec = (timeout % 1000) * 1000;
 
   setitimer(ITIMER_REAL, &it, NULL);
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
-  if (dumb_mode == 1 || no_forkserver) {
+  if (dumb_mode == 1 || no_forkserver) {   
+    /* 书接上回，当程序运行在 dumb_mode 或者 forkserver 关闭时，已经 fork 出子进程并且设置了相关的参数，
+    让子进行执行 exec，此时只需要等待子进程运行结束 */
 
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
-  } else {
+  } else {  // 执行到这里，说明程序运行在 非dumb_mode 或者 forkserver 是开启的，并且通过管道得到 fork 出来的子进程 pid
 
     s32 res;
 
-    if ((res = read(fsrv_st_fd, &status, 4)) != 4) {
+    if ((res = read(fsrv_st_fd, &status, 4)) != 4) {  // 从状态管道读取4字节内容到 status，这是为了判断第二种方式 fork 出的子进程执行结束
 
       if (stop_soon) return 0;
       RPFATAL(res, "Unable to communicate with fork server (OOM?)");
@@ -2449,7 +2462,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
   setitimer(ITIMER_REAL, &it, NULL);
 
-  total_execs++;
+  total_execs++;  // run_target 会增加 execs
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
@@ -2469,13 +2482,13 @@ static u8 run_target(char** argv, u32 timeout) {
 
   /* Report outcome to caller. */
 
-  if (WIFSIGNALED(status) && !stop_soon) {
+  if (WIFSIGNALED(status) && !stop_soon) {  // 根据子进程的结束状态进行分类
 
     kill_signal = WTERMSIG(status);
 
-    if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
+    if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;  // timeout
 
-    return FAULT_CRASH;
+    return FAULT_CRASH;   // crash
 
   }
 
@@ -2484,7 +2497,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
   if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
     kill_signal = 0;
-    return FAULT_CRASH;
+    return FAULT_CRASH; // asan detect crash
   }
 
   if ((dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
@@ -2566,7 +2579,10 @@ static void show_stats(void);
 
 /* Calibrate a new test case. This is done when processing the input directory
    to warn about flaky or otherwise problematic test cases early on; and when
-   new paths are discovered to detect variable behavior and so on. */
+   new paths are discovered to detect variable behavior and so on. 
+   queue_entry 是队列节点，相应的对应一个 testcase 文件，
+  use_mem 是根据当前将要测试的 testcase 文件中读取出来的内容，
+   */
 
 static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
                          u32 handicap, u8 from_queue) {
@@ -2574,9 +2590,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   static u8 first_trace[MAP_SIZE];
 
   u8  fault = 0, new_bits = 0, var_detected = 0, hnb = 0,
-      first_run = (q->exec_cksum == 0);
+      first_run = (q->exec_cksum == 0); // 标志位，用于指示当前 case 是否是初次执行
 
-  u64 start_us, stop_us;
+  u64 start_us, stop_us;  // 用以记录一轮 fuzzing 的起始与终止时间
 
   s32 old_sc = stage_cur, old_sm = stage_max;
   u32 use_tmout = exec_tmout;
@@ -2588,65 +2604,68 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   if (!from_queue || resuming_fuzz)
     use_tmout = MAX(exec_tmout + CAL_TMOUT_ADD,
-                    exec_tmout * CAL_TMOUT_PERC / 100);
+                    exec_tmout * CAL_TMOUT_PERC / 100); // 如果是从 queue 加载的文件或是重开 fuzz 则相应的延长需要的时间
 
   q->cal_failed++;
 
-  stage_name = "calibration";
+  stage_name = "calibration"; 
   stage_max  = fast_cal ? 3 : CAL_CYCLES;
 
   /* Make sure the forkserver is up before we do anything, and let's not
-     count its spin-up time toward binary calibration. */
+     count its spin-up time toward binary calibration. 
+     运行在非 dumb 模式下 并且 forkserver 处于打开状态，且 forksrv_pid=0 则启用 fork server*/
 
   if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
-    init_forkserver(argv);
+    init_forkserver(argv);  
+    // 运行在非 dumb 模式并且 forkserver 启用并成功 fork 出子进程，则调用 forkserver，其内部 fork 出来的子进程会完成 exec 的调用
 
-  if (q->exec_cksum) {
-
+  if (q->exec_cksum) {  
+    // 不是初次执行？使用 memcpy 函数将上次执行的 trace_bits 写到 first_trace
     memcpy(first_trace, trace_bits, MAP_SIZE);
-    hnb = has_new_bits(virgin_bits);
+    hnb = has_new_bits(virgin_bits);    // 返回 1 or 2。使用 has_new_bits 查看本次执行相比上次是否存在 new found
     if (hnb > new_bits) new_bits = hnb;
 
   }
+// 注意，上边进入 init_forkserver 是有条件的，即便进入了，在其内部的子进程也会消亡，往下的内容是主进程的内容
+  
+  start_us = get_cur_time_us();   // 起始时间
 
-  start_us = get_cur_time_us();
-
-  for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
+  for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {   // stage_max 指的是执行的次数
 
     u32 cksum;
 
-    if (!first_run && !(stage_cur % stats_update_freq)) show_stats();
+    if (!first_run && !(stage_cur % stats_update_freq)) show_stats();   
 
-    write_to_testcase(use_mem, q->len);
+    write_to_testcase(use_mem, q->len);  // 读取当前 testcase 对应结构体指出的 len 长度的内容到 use_mem
 
-    fault = run_target(argv, use_tmout);
+    fault = run_target(argv, use_tmout);  // 最终返回 子进程执行 exec 的错误原因
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
 
-    if (stop_soon || fault != crash_mode) goto abort_calibration;
+    if (stop_soon || fault != crash_mode) goto abort_calibration; // 检测到 ctrl + c 或者异常原因不是 crash_mode，则跳转执行 abort_ccalibrartion
 
     if (!dumb_mode && !stage_cur && !count_bytes(trace_bits)) {
       fault = FAULT_NOINST;
       goto abort_calibration;
     }
 
-    cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+    cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST); // 重新计算 cksum，可以看到引入了 trace_bits，因此 cksum 可以作为是否有发现
 
-    if (q->exec_cksum != cksum) {
+    if (q->exec_cksum != cksum) { // cksum 是否发生了变化
 
-      hnb = has_new_bits(virgin_bits);
+      hnb = has_new_bits(virgin_bits);  // has_new_bits 返回 1 or 2
       if (hnb > new_bits) new_bits = hnb;
 
-      if (q->exec_cksum) {
-
+      if (q->exec_cksum) {    // 若是初次运行该 testcase
         u32 i;
 
-        for (i = 0; i < MAP_SIZE; i++) {
+        for (i = 0; i < MAP_SIZE; i++) {  // 逐字节遍历桩命中情况
 
           if (!var_bytes[i] && first_trace[i] != trace_bits[i]) {
+            // 若当前比对的位置 first_trace != trace_bits 并且这个位置在 var_bytes 为空
 
-            var_bytes[i] = 1;
+            var_bytes[i] = 1; // 置该 var_bytes[i] 为 1 表示命中
             stage_max    = CAL_CYCLES_LONG;
 
           }
@@ -2657,8 +2676,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
       } else {
 
-        q->exec_cksum = cksum;
-        memcpy(first_trace, trace_bits, MAP_SIZE);
+        q->exec_cksum = cksum;    // 否则，此为初次执行该 testcase
+        memcpy(first_trace, trace_bits, MAP_SIZE);  // 拷贝此次的执行中桩的命中情况
 
       }
 
@@ -2672,10 +2691,11 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   total_cal_cycles += stage_max;
 
   /* OK, let's collect some stats about the performance of this test case.
-     This is used for fuzzing air time calculations in calculate_score(). */
+     This is used for fuzzing air time calculations in calculate_score(). 
+      收集当轮执行的情况，随后用于计算当轮的表现*/
 
   q->exec_us     = (stop_us - start_us) / stage_max;
-  q->bitmap_size = count_bytes(trace_bits);
+  q->bitmap_size = count_bytes(trace_bits); // 计数当前 trace_bits 的有效位 数
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
@@ -2692,7 +2712,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
 abort_calibration:
 
-  if (new_bits == 2 && !q->has_new_cov) {
+  if (new_bits == 2 && !q->has_new_cov) { // 存在 new_found 置当前 testcase 对应的队列节点 q->has_new_cov = 1
     q->has_new_cov = 1;
     queued_with_cov++;
   }
@@ -2746,7 +2766,7 @@ static void perform_dry_run(char** argv) {
   u32 cal_failures = 0;
   u8* skip_crashes = getenv("AFL_SKIP_CRASHES");
 
-  while (q) {
+  while (q) {   // 循环遍历 queue 中的节点
 
     u8* use_mem;
     u8  res;
@@ -2756,17 +2776,17 @@ static void perform_dry_run(char** argv) {
 
     ACTF("Attempting dry run with '%s'...", fn);
 
-    fd = open(q->fname, O_RDONLY);
+    fd = open(q->fname, O_RDONLY);    // 以只读方式打开 testcase
     if (fd < 0) PFATAL("Unable to open '%s'", q->fname);
 
-    use_mem = ck_alloc_nozero(q->len);
+    use_mem = ck_alloc_nozero(q->len);  // 根据队列节点结构体的 len 分配对应长的空间
 
-    if (read(fd, use_mem, q->len) != q->len)
+    if (read(fd, use_mem, q->len) != q->len)   // 从只读方式打开的 testcase 中读取相应长度的内容
       FATAL("Short read from '%s'", q->fname);
 
     close(fd);
 
-    res = calibrate_case(argv, q, use_mem, 0, 1);
+    res = calibrate_case(argv, q, use_mem, 0, 1); // 开始校准 testcase，将 testcase 喂给 target binary
     ck_free(use_mem);
 
     if (stop_soon) return;
@@ -2775,7 +2795,7 @@ static void perform_dry_run(char** argv) {
       SAYF(cGRA "    len = %u, map size = %u, exec speed = %llu us\n" cRST, 
            q->len, q->bitmap_size, q->exec_us);
 
-    switch (res) {
+    switch (res) {  // 根据 reason
 
       case FAULT_NONE:
 
@@ -8067,7 +8087,7 @@ int main(int argc, char** argv) {
   else
     use_argv = argv + optind;
 
-  perform_dry_run(use_argv);
+  perform_dry_run(use_argv);  // 从 corpus 中读取 initial file 进行 target run
 
   cull_queue();
 
