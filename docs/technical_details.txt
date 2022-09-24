@@ -23,19 +23,19 @@ governing principles are speed, reliability, and ease of use.
 1) Coverage measurements
 ------------------------
 
-The instrumentation injected into compiled programs captures branch (edge)
-coverage, along with coarse branch-taken hit counts. The code injected at
+The instrumentation injected into compiled programs captures branch (edge)          插桩阶段注入编译后的二进制程序中的代码用于捕捉程序的 branch（亦称 edge）的覆盖率
+coverage, along with coarse branch-taken hit counts. The code injected at           以及一些粗糙的 branch 命中计数。
 branch points is essentially equivalent to:
 
-  cur_location = <COMPILE_TIME_RANDOM>;
+  cur_location = <COMPILE_TIME_RANDOM>;                                             
   shared_mem[cur_location ^ prev_location]++; 
   prev_location = cur_location >> 1;
 
-The cur_location value is generated randomly to simplify the process of
+The cur_location value is generated randomly to simplify the process of             cur_location 的值是随机生成的
 linking complex projects and keep the XOR output distributed uniformly.
 
-The shared_mem[] array is a 64 kB SHM region passed to the instrumented binary
-by the caller. Every byte set in the output map can be thought of as a hit for
+The shared_mem[] array is a 64 kB SHM region passed to the instrumented binary      share_mem[]数组 是一个 64KB 的 SHM 区域（共享内存区域），经由插桩调用者传递给
+by the caller. Every byte set in the output map can be thought of as a hit for      待插桩程序的。每一个 byte
 a particular (branch_src, branch_dst) tuple in the instrumented code.
 
 The size of the map is chosen so that collisions are sporadic with almost all
